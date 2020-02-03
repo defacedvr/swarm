@@ -5,6 +5,7 @@ defmodule Swarm.Registry do
   use GenServer
 
   @table_name :swarm_registry
+  @reverse_table_name :swarm_registry_reverse
 
   ## Public API
 
@@ -119,26 +120,45 @@ defmodule Swarm.Registry do
   Inserts a new registration, and returns true if successful, or false if not
   """
   @spec new(Entry.entry()) :: boolean
-  def new(entry() = reg) do
-    :ets.insert_new(@table_name, reg)
+  def new(entry(pid: pid, ref: ref, name: name) = reg) do
+    case :ets.insert_new(@table_name, reg) do
+      true ->
+        :ets.insert(@reverse_table_name, {pid, name})
+        :ets.insert(@reverse_table_name, {ref, name})
+        true
+
+      false ->
+        false
+    end
   end
 
   @doc """
   Like `new/1`, but raises if the insertion fails.
   """
   @spec new!(Entry.entry()) :: true | no_return
-  def new!(entry() = reg) do
+  def new!(entry(pid: pid, ref: ref, name: name) = reg) do
     true = :ets.insert_new(@table_name, reg)
+    true = :ets.insert(@reverse_table_name, {pid, name})
+    true = :ets.insert(@reverse_table_name, {ref, name})
   end
 
   @spec remove(Entry.entry()) :: true
-  def remove(entry() = reg) do
+  def remove(entry(pid: pid, ref: ref, name: name) = reg) do
     :ets.delete_object(@table_name, reg)
+    :ets.delete_object(@reverse_table_name, {pid, name})
+    :ets.delete_object(@reverse_table_name, {ref, name})
   end
 
   @spec remove_by_name(term()) :: true
   def remove_by_name(name) do
-    :ets.delete(@table_name, name)
+    case get_by_name(name) do
+      :undefined ->
+        true
+
+      entry ->
+        remove(entry)
+        true
+    end
   end
 
   @spec remove_by_pid(pid) :: true
@@ -148,7 +168,7 @@ defmodule Swarm.Registry do
         true
 
       entries when is_list(entries) ->
-        Enum.each(entries, &:ets.delete_object(@table_name, &1))
+        Enum.each(entries, &remove/1)
         true
     end
   end
@@ -163,10 +183,10 @@ defmodule Swarm.Registry do
 
   @spec get_by_pid(pid) :: :undefined | [Entry.entry()]
   def get_by_pid(pid) do
-    case :ets.match_object(
-           @table_name,
-           entry(name: :"$1", pid: pid, ref: :"$2", meta: :"$3", clock: :"$4")
-         ) do
+    :ets.lookup(@reverse_table_name, pid)
+    |> Enum.map(fn {_, name} -> name end)
+    |> Enum.flat_map(fn name -> :ets.lookup(@table_name, name) end)
+    |> case do
       [] -> :undefined
       list when is_list(list) -> list
     end
@@ -185,10 +205,10 @@ defmodule Swarm.Registry do
 
   @spec get_by_ref(reference()) :: :undefined | Entry.entry()
   def get_by_ref(ref) do
-    case :ets.match_object(
-           @table_name,
-           entry(name: :"$1", pid: :"$2", ref: ref, meta: :"$3", clock: :"$4")
-         ) do
+    :ets.lookup(@reverse_table_name, ref)
+    |> Enum.map(fn {_, name} -> name end)
+    |> Enum.flat_map(fn name -> :ets.lookup(@table_name, name) end)
+    |> case do
       [] -> :undefined
       [obj] -> obj
     end
@@ -236,7 +256,7 @@ defmodule Swarm.Registry do
 
   def init(_) do
     # start ETS table for registry
-    t =
+    registry_tid =
       :ets.new(@table_name, [
         :set,
         :named_table,
@@ -246,6 +266,15 @@ defmodule Swarm.Registry do
         write_concurrency: true
       ])
 
-    {:ok, t}
+    _reverse_tid =
+      :ets.new(@reverse_table_name, [
+        :set,
+        :named_table,
+        :public,
+        read_concurrency: true,
+        write_concurrency: true
+      ])
+
+    {:ok, registry_tid}
   end
 end
