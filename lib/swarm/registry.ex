@@ -32,7 +32,12 @@ defmodule Swarm.Registry do
         Tracker.whereis(name)
 
       entry(pid: pid) when is_pid(pid) ->
-        pid
+        if Node.self() == node(pid) or node(pid) in Node.list() do
+          pid
+        else
+          remove_by_pid(pid)
+          Tracker.whereis(name)
+        end
     end
   end
 
@@ -143,10 +148,10 @@ defmodule Swarm.Registry do
   end
 
   @spec remove(Entry.entry()) :: true
-  def remove(entry(pid: pid, ref: ref, name: name) = reg) do
-    :ets.delete_object(@table_name, reg)
-    :ets.delete_object(@reverse_table_name, {pid, name})
-    :ets.delete_object(@reverse_table_name, {ref, name})
+  def remove(entry(pid: pid, ref: ref, name: name) = _reg) do
+    :ets.delete(@table_name, name)
+    :ets.delete(@reverse_table_name, pid)
+    :ets.delete(@reverse_table_name, ref)
   end
 
   @spec remove_by_name(term()) :: true
@@ -194,12 +199,10 @@ defmodule Swarm.Registry do
 
   @spec get_by_pid_and_name(pid(), term()) :: :undefined | Entry.entry()
   def get_by_pid_and_name(pid, name) do
-    case :ets.match_object(
-           @table_name,
-           entry(name: name, pid: pid, ref: :"$1", meta: :"$2", clock: :"$3")
-         ) do
+    case :ets.lookup(@reverse_table_name, pid) do
       [] -> :undefined
-      [obj] -> obj
+      [{^pid, ^name} = obj] -> obj
+      [_obj] -> :undefined
     end
   end
 
